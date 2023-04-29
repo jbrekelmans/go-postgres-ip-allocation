@@ -49,16 +49,16 @@ type app struct {
 	s      storage.Storage
 }
 
-func (a *app) allocateIPCIDRRange(ctx context.Context, prefixBits int, allocatedTo string) (c cidr.CIDR, err error) {
+func (a *app) allocateIPCIDRRange(ctx context.Context, prefixBits int, requestID string) (c cidr.CIDR, err error) {
 	defer measure()()
-	record, err := a.findAllocated(ctx, allocatedTo)
+	record, err := a.findAllocated(ctx, requestID)
 	if err != nil {
 		return
 	}
 	if record != nil {
 		if record.C.PrefixBits != prefixBits {
-			err = fmt.Errorf(`allocateIPCIDRRange for allocatedTo=%#v was previously called with prefixBits=%d but now got prefixBits=%d`,
-				allocatedTo, record.C.PrefixBits, prefixBits)
+			err = fmt.Errorf(`allocateIPCIDRRange for requestID=%#v was previously called with prefixBits=%d but now got prefixBits=%d`,
+				requestID, record.C.PrefixBits, prefixBits)
 			return
 		}
 		c = record.C
@@ -107,7 +107,7 @@ func (a *app) allocateIPCIDRRange(ctx context.Context, prefixBits int, allocated
 		// Update record to be the lower half.
 		record.C.PrefixBits++
 	}
-	record.AllocatedTo = allocatedTo
+	record.RequestID = requestID
 	if recordOldPrefixBits != record.C.PrefixBits {
 		recordOldC := record.C
 		recordOldC.PrefixBits = recordOldPrefixBits
@@ -130,7 +130,7 @@ func (a *app) allocateIPCIDRRange(ctx context.Context, prefixBits int, allocated
 	return
 }
 
-func (a *app) findAllocated(ctx context.Context, allocatedTo string) (record *storage.Record, err error) {
+func (a *app) findAllocated(ctx context.Context, requestID string) (record *storage.Record, err error) {
 	tx, err := a.s.BeginTransaction(ctx, &sql.TxOptions{
 		ReadOnly:  true,
 		Isolation: sql.LevelReadUncommitted,
@@ -147,7 +147,7 @@ func (a *app) findAllocated(ctx context.Context, allocatedTo string) (record *st
 			err = tx.Commit()
 		}
 	}()
-	record, err = tx.FindAllocated(ctx, a.poolID, allocatedTo)
+	record, err = tx.FindAllocated(ctx, a.poolID, requestID)
 	return
 }
 
@@ -165,9 +165,9 @@ func measure() func() {
 	}
 }
 
-func (a *app) deallocateIPCIDRRange(ctx context.Context, allocatedTo string) (c cidr.CIDR, err error) {
+func (a *app) deallocateIPCIDRRange(ctx context.Context, requestID string) (c cidr.CIDR, err error) {
 	defer measure()()
-	record, err := a.findAllocated(ctx, allocatedTo)
+	record, err := a.findAllocated(ctx, requestID)
 	if err != nil {
 		return
 	}
@@ -193,7 +193,7 @@ func (a *app) deallocateIPCIDRRange(ctx context.Context, allocatedTo string) (c 
 	}()
 	c = record.C
 	recordOldPrefixBits := record.C.PrefixBits
-	record.AllocatedTo = ""
+	record.RequestID = ""
 	for record.C.PrefixBits > 0 {
 		var record2 *storage.Record
 		record2, err = tx.Get(ctx, a.poolID, record.C.Other())
@@ -204,7 +204,7 @@ func (a *app) deallocateIPCIDRRange(ctx context.Context, allocatedTo string) (c 
 			// The CIDR that we can merge with has been subdivided.
 			break
 		}
-		if record2.AllocatedTo != "" {
+		if record2.RequestID != "" {
 			// The CIDR that we can merge has been allocated to an object.
 			break
 		}
@@ -254,7 +254,7 @@ func (a *app) doDDLStatements(ctx context.Context) error {
 }
 
 func (a *app) dump(ctx context.Context) (err error) {
-	rows, err := a.db.QueryContext(ctx, `SELECT c,allocated_to FROM public.ip_range WHERE pool_id=$1`, a.poolID)
+	rows, err := a.db.QueryContext(ctx, `SELECT c,request_id FROM public.ip_range WHERE pool_id=$1`, a.poolID)
 	if err != nil {
 		return
 	}
@@ -270,13 +270,13 @@ func (a *app) dump(ctx context.Context) (err error) {
 	var records []storage.Record
 	for rows.Next() {
 		record := storage.Record{PoolID: a.poolID}
-		var allocatedTo *string
-		err = rows.Scan(&record.C, &allocatedTo)
+		var requestID *string
+		err = rows.Scan(&record.C, &requestID)
 		if err != nil {
 			return
 		}
-		if allocatedTo != nil {
-			record.AllocatedTo = *allocatedTo
+		if requestID != nil {
+			record.RequestID = *requestID
 		}
 		records = append(records, record)
 	}
@@ -290,7 +290,7 @@ func (a *app) dump(ctx context.Context) (err error) {
 		return bytes.Compare(record1.C.IP, record2.C.IP) < 0
 	})
 	for _, record := range records {
-		log.Info().Msgf("%d %s allocatedTo=%#v", record.PoolID, record.C.String(), record.AllocatedTo)
+		log.Info().Msgf("%d %s requestID=%#v", record.PoolID, record.C.String(), record.RequestID)
 	}
 	return
 }
@@ -360,12 +360,12 @@ func (a *app) run(ctx context.Context) (err error) {
 		go func() {
 			defer waitGroup.Done()
 			for i := 1; i <= allocationsPerWorker; {
-				allocatedTo := fmt.Sprintf("worker%d_user%d", workerID, i)
+				requestID := fmt.Sprintf("worker%d_user%d", workerID, i)
 				log := func(lvl zerolog.Level) *zerolog.Event {
-					return log.WithLevel(lvl).Int("worker", workerID).Str("allocatedTo", allocatedTo)
+					return log.WithLevel(lvl).Int("worker", workerID).Str("requestID", requestID)
 				}
 				var cidr cidr.CIDR
-				cidr, err = a.allocateIPCIDRRange(ctx, prefixBits, allocatedTo)
+				cidr, err = a.allocateIPCIDRRange(ctx, prefixBits, requestID)
 				if err != nil {
 					var pgErr *pgconn.PgError
 					if errors.As(err, &pgErr) {
@@ -393,16 +393,16 @@ func (a *app) run(ctx context.Context) (err error) {
 	waitGroup.Wait()
 	for workerID := 1; workerID <= parallelism; workerID++ {
 		for i := 1; i <= allocationsPerWorker; i++ {
-			allocatedTo := fmt.Sprintf("worker%d_user%d", workerID, i)
-			cidr, err := a.deallocateIPCIDRRange(ctx, allocatedTo)
+			requestID := fmt.Sprintf("worker%d_user%d", workerID, i)
+			cidr, err := a.deallocateIPCIDRRange(ctx, requestID)
 			if err != nil {
 				if !errors.Is(err, errRecordDoesNotExist) {
 					return err
 				}
-				log.Debug().Str("allocatedTo", allocatedTo).Msgf("ignoring \"does not exist\" error")
+				log.Debug().Str("requestID", requestID).Msgf("ignoring \"does not exist\" error")
 				continue
 			}
-			log.Info().Str("allocatedTo", allocatedTo).Msgf("deallocated %v", cidr)
+			log.Info().Str("requestID", requestID).Msgf("deallocated %v", cidr)
 		}
 	}
 	log.Info().

@@ -65,12 +65,12 @@ func (t *txWrapper) execContext(ctx context.Context, expectedRowsAffected int, q
 	return nil
 }
 
-func (t *txWrapper) FindAllocated(ctx context.Context, poolID int, allocatedTo string) (*storage.Record, error) {
-	if allocatedTo == "" {
-		return nil, fmt.Errorf("allocatedTo must not be empty")
+func (t *txWrapper) FindAllocated(ctx context.Context, poolID int, requestID string) (*storage.Record, error) {
+	if requestID == "" {
+		return nil, fmt.Errorf("requestID must not be empty")
 	}
-	row := t.queryRow(ctx, `SELECT c FROM public.ip_range WHERE pool_id=$1 AND allocated_to=$2`, poolID, allocatedTo)
-	record := &storage.Record{AllocatedTo: allocatedTo, PoolID: poolID}
+	row := t.queryRow(ctx, `SELECT c FROM public.ip_range WHERE pool_id=$1 AND request_id=$2`, poolID, requestID)
+	record := &storage.Record{RequestID: requestID, PoolID: poolID}
 	err := row.Scan(&record.C)
 	if err != nil {
 		if !errors.Is(err, sql.ErrNoRows) {
@@ -85,10 +85,10 @@ func (t *txWrapper) FindSmallestFree(ctx context.Context, poolID, prefixBits int
 	row := t.queryRow(ctx,
 		`SELECT c
 FROM public.ip_range
-WHERE allocated_to IS NULL AND masklen(c) <= (
+WHERE request_id IS NULL AND masklen(c) <= (
 	SELECT MAX(masklen(c))
 	FROM public.ip_range
-	WHERE allocated_to IS NULL AND masklen(c) <= $1
+	WHERE request_id IS NULL AND masklen(c) <= $1
 	)
 ORDER BY masklen(c) DESC
 LIMIT 1`, prefixBits)
@@ -104,18 +104,18 @@ LIMIT 1`, prefixBits)
 }
 
 func (t *txWrapper) Get(ctx context.Context, poolID int, c cidr.CIDR) (*storage.Record, error) {
-	row := t.queryRow(ctx, `SELECT allocated_to FROM public.ip_range WHERE pool_id=$1 AND c=$2`, poolID, c.String())
+	row := t.queryRow(ctx, `SELECT request_id FROM public.ip_range WHERE pool_id=$1 AND c=$2`, poolID, c.String())
 	record := &storage.Record{PoolID: poolID, C: c}
-	var allocatedTo *string
-	err := row.Scan(&allocatedTo)
+	var requestID *string
+	err := row.Scan(&requestID)
 	if err != nil {
 		if !errors.Is(err, sql.ErrNoRows) {
 			return nil, err
 		}
 		return nil, nil
 	}
-	if allocatedTo != nil {
-		record.AllocatedTo = *allocatedTo
+	if requestID != nil {
+		record.RequestID = *requestID
 	}
 	return record, nil
 }
@@ -125,7 +125,7 @@ func (t *txWrapper) InsertMany(ctx context.Context, records []storage.Record) er
 		return nil
 	}
 	var statementBuilder bytes.Buffer
-	statementBuilder.WriteString(`INSERT INTO public.ip_range(pool_id,c,allocated_to) VALUES `)
+	statementBuilder.WriteString(`INSERT INTO public.ip_range(pool_id,c,request_id) VALUES `)
 	statementArgs := make([]any, 0, len(records)*2+2)
 	placeholderCounter := 1
 	nextPlaceholder := func() string {
@@ -163,7 +163,7 @@ func (t *txWrapper) InsertMany(ctx context.Context, records []storage.Record) er
 		statementBuilder.WriteByte(',')
 		addStatementArg(record.C.String())
 		statementBuilder.WriteByte(',')
-		addStatementArg(emptyStringToNil(record.AllocatedTo))
+		addStatementArg(emptyStringToNil(record.RequestID))
 		statementBuilder.WriteString("),")
 	}
 	statementBytes := statementBuilder.Bytes()
@@ -183,8 +183,8 @@ func (t *txWrapper) Rollback() error {
 
 func (t *txWrapper) Update(ctx context.Context, record storage.Record) error {
 	return t.execContext(ctx, 1,
-		`UPDATE public.ip_range SET allocated_to=$1 WHERE pool_id=$2 AND c=$3`,
-		emptyStringToNil(record.AllocatedTo), record.PoolID, record.C.String())
+		`UPDATE public.ip_range SET request_id=$1 WHERE pool_id=$2 AND c=$3`,
+		emptyStringToNil(record.RequestID), record.PoolID, record.C.String())
 }
 
 func emptyStringToNil(s string) any {

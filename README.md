@@ -18,18 +18,21 @@ Postgres is assumed and the connection string is hardcoded to `postgres://postgr
 
 The main functions in [main.go](main.go) are:
 
-1. To allocate an IP CIDR range to an object identified as `allocatedTo`:
+1. To allocate an IP CIDR range to an object identified as `requestID`:
 
     ```go
-    func (a *app) allocateIPCIDRRange(ctx context.Context, prefixBits int, allocatedTo string) (c cidr.CIDR, err error)
+    func (a *app) allocateIPCIDRRange(ctx context.Context, prefixBits int, requestID string) (c cidr.CIDR, err error)
     ```
 
-    This function will find the smallest big-enough free CIDR range, split it if needed, and allocate it to `allocatedTo` in a single transaction. 
+    This function will find the smallest big-enough free CIDR range, split it if needed, and allocate it to `requestID` in a single transaction.
+    
+    `requestID` identifies the request and is needed to reliably allocate in case of transient errors.
+    Calls to `allocateIPCIDRRange` with the same `requestID` are idempotent.
 
 2. To deallocate:
 
     ```go
-    func (a *app) deallocateIPCIDRRange(ctx context.Context, allocatedTo string) (c cidr.CIDR, err error)
+    func (a *app) deallocateIPCIDRRange(ctx context.Context, requestID string) (c cidr.CIDR, err error)
     ```
 
     This function will deallocate and aggressively merge free CIDR ranges, in a single transaction.

@@ -15,9 +15,9 @@ import (
 // 192.168.128.0 to 192.168.255.255 (inclusive).
 type Record struct {
 	PoolID int
-	// AllocatedTo is a human-readable identifier of the object this range is allocated to.
+	// RequestID is a human-readable identifier of the object this range is allocated to.
 	// Empty if this range is free (not allocated to any object).
-	AllocatedTo string
+	RequestID string
 	// C is the CIDR notation for the range of IP addresses.
 	C cidr.CIDR
 }
@@ -46,12 +46,12 @@ type Transaction interface {
 	Delete(ctx context.Context, poolID int, c cidr.CIDR) error
 
 	// FindAllocated finds the record allocated to the object
-	// identified by allocatedTo.
+	// identified by requestID.
 	// If no such record exists then returns nil.
-	// If allocatedTo is empty then returns an error.
-	// Since no two different records can have equal allocatedTo,
+	// If requestID is empty then returns an error.
+	// Since no two different records can have equal requestID,
 	// there is at most one such record.
-	FindAllocated(ctx context.Context, poolID int, allocatedTo string) (*Record, error)
+	FindAllocated(ctx context.Context, poolID int, requestID string) (*Record, error)
 
 	// FindSmallestFree finds records that:
 	// 1. are not allocated to any object;
